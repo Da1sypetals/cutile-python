@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 import torch
+import numpy as np
 from typing import Union, Optional
 from math import ceil
 import cuda.tile as ct
@@ -86,13 +87,28 @@ def get_ptr_16_byte_non_divisible_view(A: TensorLike):
 
 
 def torch_to_tf32(x: torch.Tensor):
-    # emulate TF32 cast in PyTorch by performing a matmul with diag(ones) in TF32 precision
-    x1d = x.view(-1)
-    dummy = torch.eye(x1d.shape[0], dtype=x.dtype, device='cuda')
-    torch.set_float32_matmul_precision("high")
-    x1d = torch.matmul(x1d, dummy).view(-1)
-    torch.set_float32_matmul_precision("highest")
-    return x1d.view(x.shape)
+    assert torch.is_floating_point(x)
+    x_f32 = x.to(torch.float32)
+    assert torch.all(torch.isfinite(x_f32))
+    # fp32: 9 bits sign+expo + 23 bits mantissa
+    # tf32: 9 bits sign+expo + 10 bits mantissa + 13bits zeros
+    x_bits = x_f32.view(torch.int32).cpu().numpy()
+    # LSB, Guard, Round, Sticky
+    lsb = ((x_bits >> 13) & 1)
+    guard = ((x_bits >> 12) & 1)
+    round = ((x_bits >> 11) & 1)
+    sticky = (x_bits & ((1 << 11) - 1)) != 0
+    round_down = (guard == 0)
+    round_down |= ((guard == 1) & (round == 0) & (sticky == 0) & (lsb == 0))
+    mask = ~((1 << 13) - 1)
+    x_down = (x_bits & mask).view(np.uint32)
+    # since we checked the fp32 value is finite,
+    # it is safe to add one bit mantissa wihtout overflow check
+    x_up = x_down + (1 << 13)
+    x_tf32_bits = np.where(round_down, x_down, x_up)
+    return torch.tensor(x_tf32_bits,
+                        dtype=torch.uint32,
+                        device=x.device).view(torch.float32).view(x.shape).to(x.dtype)
 
 
 @contextmanager

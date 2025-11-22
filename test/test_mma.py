@@ -140,6 +140,7 @@ def test_mma_tf32(tile_size):
     ref = C + torch_to_tf32(A) @ torch_to_tf32(B)
     ct.launch(torch.cuda.current_stream(), (1,), mma_tf32_kernel,
               (A, B, C, m, n, k))
+    # use float16 for tolerance because tf32 has the same precision
     atol, rtol = get_tolerance(torch.float16)
     assert_close(C, ref, atol=atol, rtol=rtol)
 
