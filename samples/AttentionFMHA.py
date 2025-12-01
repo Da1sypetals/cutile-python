@@ -255,12 +255,12 @@ def cutile_autotune_fmha(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor,
     # --- Tune/Get the best configuration for the FMHA Kernel ---
     tuned_result = autotuner(
         torch.cuda.current_stream(),
-        grid_fn=lambda TILE_M: (math.ceil(SeqLen_Q / TILE_M), Batch * Heads, 1),
+        grid_fn=lambda named_args, cfg: (math.ceil(SeqLen_Q / cfg.TILE_M), Batch * Heads, 1),
         kernel=fmha_kernel,
-        args_fn=lambda TILE_M, TILE_N: (
+        args_fn=lambda cfg: (
             Q, K, V, Out,
             qk_scale, input_pos, D_k, Heads,
-            TILE_M, TILE_N, query_group_size, causal, (SeqLen_KV % TILE_N) == 0
+            cfg.TILE_M, cfg.TILE_N, query_group_size, causal, (SeqLen_KV % cfg.TILE_N) == 0
         ),
     )
 

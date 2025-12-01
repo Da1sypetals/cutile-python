@@ -6,13 +6,13 @@ import torch
 import pytest
 import cuda.tile as ct
 import math
-import re
 from typing import Any
 from util import assert_equal
 
 import autotuner.autotuner as autotuner_mod
 from autotuner.autotuner import Autotuner, Config, SearchSpace, autotune
 from cuda.tile._cext import default_tile_context
+from cuda.tile._exception import TileCompilerTimeoutError
 
 
 @ct.kernel
@@ -34,13 +34,13 @@ def dummy_kernel(x, TILE_SIZE: ct.Constant[int]):
     pass
 
 
-def grid_fn(x, TILE_SIZE):
-    return (math.ceil(x.shape[0] / TILE_SIZE), 1, 1)
+def grid_fn(named_args, cfg):
+    return (math.ceil(named_args["x"].shape[0] / cfg.TILE_SIZE), 1, 1)
 
 
 # ========== Test Predicate Filters ==========#
 def test_predicate_filters_all():
-    tuner = Autotuner(SearchSpace(configs, predicate_fn=lambda x, TILE_SIZE: False))
+    tuner = Autotuner(SearchSpace(configs, predicate_fn=lambda named_args, cfg: False))
 
     x = torch.empty((256,), device='cuda')
     with pytest.raises(ValueError, match=r"No valid config"):
@@ -48,40 +48,57 @@ def test_predicate_filters_all():
             stream=torch.cuda.current_stream(),
             grid_fn=grid_fn,
             kernel=inplace_kernel,
-            args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
+            args_fn=lambda cfg: (x, cfg.TILE_SIZE),
         )
 
 
-# ========== Test Autotune Raises on Invalid Grid Function / Args Function Parameters ==========#
-def test_autotune_raises_on_invalid_grid_function_parameters():
+# ========== Test Autotune Raises on Invalid Function Arguments ==========#
+def test_autotune_raises_on_invalid_grid_function_arguments():
     tuner = Autotuner(configs)
     x = torch.empty((1024,), device="cuda")
-    match = re.escape("Function parameter TILE_SIZE0 in grid_fn is not in kernel parameters, "
-                      "available parameters are ['x', 'TILE_SIZE']")
-    with pytest.raises(TypeError, match=match):
+    with pytest.raises(KeyError, match='x0'):
         tuner(
             stream=torch.cuda.current_stream(),
-            grid_fn=lambda x, TILE_SIZE0: (math.ceil(x.shape[0] / TILE_SIZE0), 1, 1),
+            grid_fn=lambda named_args, cfg: (
+                math.ceil(named_args['x0'].shape[0] / cfg.TILE_SIZE), 1, 1
+            ),
+            kernel=dummy_kernel,
+            args_fn=lambda cfg: (x, cfg.TILE_SIZE),
+        )
+
+
+def test_autotune_raises_on_invalid_args_function_arguments():
+    tuner = Autotuner(configs)
+    x = torch.empty((1024,), device="cuda")
+    with pytest.raises(TypeError, match='Unsupported argument type Config'):
+        tuner(
+            stream=torch.cuda.current_stream(),
+            grid_fn=lambda named_args, cfg: (
+                math.ceil(named_args['x'].shape[0] / cfg.TILE_SIZE), 1, 1
+            ),
             kernel=dummy_kernel,
             args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
         )
 
 
-def test_autotune_raises_on_invalid_args_function_parameters():
-    tuner = Autotuner(configs)
+def test_autotune_raises_on_invalid_predicate_function_arguments():
+    tuner = Autotuner(
+        SearchSpace(configs, predicate_fn=lambda named_args, cfg: named_args['x0'].shape[0] > 0)
+        )
+
     x = torch.empty((1024,), device="cuda")
-    match = re.escape("Invalid parameters for args_fn, "
-                      "should be the same as the search space config argument keys: ['TILE_SIZE']")
-    with pytest.raises(TypeError, match=match):
+    with pytest.raises(KeyError, match='x0'):
         tuner(
             stream=torch.cuda.current_stream(),
-            grid_fn=lambda x, TILE_SIZE: (math.ceil(x.shape[0] / TILE_SIZE), 1, 1),
+            grid_fn=lambda named_args, cfg: (
+                math.ceil(named_args['x'].shape[0] / cfg.TILE_SIZE), 1, 1
+            ),
             kernel=dummy_kernel,
-            args_fn=lambda TILE_SIZE0: (x, TILE_SIZE0),
+            args_fn=lambda cfg: (x, cfg.TILE_SIZE),
         )
 
 
-# ========== Test Autotune Allows Keyword Only Parameters ==========#
+# ========== Test Autotune Allows Keyword Only Arguments ==========#
 @ct.kernel
 def k_kwonly(x, y, *, TILE_SIZE: ct.Constant[int]):
     bid = ct.bid(0)
@@ -98,7 +115,7 @@ def test_autotune_allows_keyword_only_param_and_runs():
         stream=torch.cuda.current_stream(),
         grid_fn=grid_fn,
         kernel=k_kwonly,
-        args_fn=lambda TILE_SIZE: (x, y, TILE_SIZE),
+        args_fn=lambda cfg: (x, y, cfg.TILE_SIZE),
     )
     assert_equal(y, x + 1)
 
@@ -121,8 +138,8 @@ def test_clear_cache(_patch_timer_and_launch):
     tuner = autotuner_mod.Autotuner(configs)
     x = torch.empty((256,), device="cuda")
 
-    def args_fn(TILE_SIZE):
-        return (x, TILE_SIZE)
+    def args_fn(cfg):
+        return (x, cfg.TILE_SIZE)
 
     # 1) First tune
     tuner(torch.cuda.current_stream(), grid_fn, dummy_kernel, args_fn)
@@ -141,7 +158,7 @@ def test_clear_cache(_patch_timer_and_launch):
     assert third_count > second_count, "Expected timing to run after clear_cache()"
 
     # 4) Clear by key only
-    key = autotuner_mod._default_key(dummy_kernel, args_fn(**configs[0].kwargs))
+    key = autotuner_mod._default_key(dummy_kernel, args_fn(configs[0]))
     tuner(torch.cuda.current_stream(), grid_fn, dummy_kernel, args_fn)
     before_key_clear = _patch_timer_and_launch["count"]
     tuner.clear_cache(key)
@@ -169,7 +186,7 @@ def test_default_key_includes_scalar_value(_patch_timer_and_launch):
         torch.cuda.current_stream(),
         grid_fn,
         kernel_with_scalar_value,
-        args_fn=lambda TILE_SIZE: (x, 0.0, TILE_SIZE),
+        args_fn=lambda cfg: (x, 0.0, cfg.TILE_SIZE),
         key_fn=custom_key_with_scalar_value,
     )
     first_count = _patch_timer_and_launch["count"]
@@ -180,7 +197,7 @@ def test_default_key_includes_scalar_value(_patch_timer_and_launch):
         torch.cuda.current_stream(),
         grid_fn,
         kernel_with_scalar_value,
-        args_fn=lambda TILE_SIZE: (x, 0.0, TILE_SIZE),
+        args_fn=lambda cfg: (x, 0.0, cfg.TILE_SIZE),
         key_fn=custom_key_with_scalar_value,
     )
     second_count = _patch_timer_and_launch["count"]
@@ -191,7 +208,7 @@ def test_default_key_includes_scalar_value(_patch_timer_and_launch):
         torch.cuda.current_stream(),
         grid_fn,
         kernel_with_scalar_value,
-        args_fn=lambda TILE_SIZE: (x, 1.0, TILE_SIZE),
+        args_fn=lambda cfg: (x, 1.0, cfg.TILE_SIZE),
         key_fn=custom_key_with_scalar_value,
     )
     third_count = _patch_timer_and_launch["count"]
@@ -213,7 +230,7 @@ def test_custom_transforms(monkeypatch):
         stream=torch.cuda.current_stream(),
         grid_fn=grid_fn,
         kernel=dummy_kernel,
-        args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
+        args_fn=lambda cfg: (x, cfg.TILE_SIZE),
         transforms={"x": lambda x: custom_x},
     )
 
@@ -250,7 +267,7 @@ def test_autotune_handles_timeout_and_raises_when_all_configs_fail(monkeypatch, 
 
     def fake_time_ms(run_once, *, get_args, stream, warmup=2, rep=10):
         if default_tile_context.config.compiler_timeout_sec <= 1:
-            raise RuntimeError("simulated compiler timeout")
+            raise TileCompilerTimeoutError("simulated compiler timeout", "", None)
         return 1
 
     monkeypatch.setattr(autotuner_mod, "_time_ms", fake_time_ms, raising=True)
@@ -261,9 +278,9 @@ def test_autotune_handles_timeout_and_raises_when_all_configs_fail(monkeypatch, 
             stream=torch.cuda.current_stream(),
             grid_fn=grid_fn,
             kernel=dummy_kernel,
-            args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
+            args_fn=lambda cfg: (x, cfg.TILE_SIZE),
         )
-    assert "failed to run" not in caplog.text
+    assert "compilation timeout" not in caplog.text
 
     # Timeout
     caplog.clear()
@@ -273,11 +290,11 @@ def test_autotune_handles_timeout_and_raises_when_all_configs_fail(monkeypatch, 
                 stream=torch.cuda.current_stream(),
                 grid_fn=grid_fn,
                 kernel=dummy_kernel,
-                args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
+                args_fn=lambda cfg: (x, cfg.TILE_SIZE),
                 compiler_time_limit_sec=1,
                 force_retune=True,
             )
-    assert "failed to run" in caplog.text
+    assert "compilation timeout" in caplog.text
     # Make sure the timeout is restored
     assert default_tile_context.config.compiler_timeout_sec == old_timeout
 
@@ -291,7 +308,7 @@ def inplace_plus_one_base(stream, x, autotuner: Autotuner):
         stream,
         grid_fn=grid_fn,
         kernel=inplace_kernel,
-        args_fn=lambda TILE_SIZE: (x, TILE_SIZE),
+        args_fn=lambda cfg: (x, cfg.TILE_SIZE),
         transforms={"x": lambda x: x.clone()}
     )
     return x

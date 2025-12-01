@@ -126,15 +126,15 @@ def cutile_rms_norm(x, weight, eps, static_persistent, gather):
     return y.view(*x.shape)
 
 
-def _static_persistent_autotune_grid(X, TILE_SIZE_M, TILE_SIZE_N):
+def _static_persistent_autotune_grid(named_args, cfg):
     """Grid function for static persistent RMS Norm autotuning"""
     NUM_SMS = torch.cuda.get_device_properties(
         "cuda"
     ).multi_processor_count
-    M, N = X.shape[0], X.shape[1]
+    M, N = named_args['X'].shape[0], named_args['X'].shape[1]
     grid_size = min(
         NUM_SMS,
-        ceil(M / TILE_SIZE_M) * ceil(N / TILE_SIZE_N),
+        ceil(M / cfg.TILE_SIZE_M) * ceil(N / cfg.TILE_SIZE_N),
     )
     return (grid_size,)
 
@@ -156,14 +156,14 @@ def _static_persistent_autotune_configs():
     return configs
 
 
-def _static_persistent_autotune_predicate(X, TILE_SIZE_N):
+def _static_persistent_autotune_predicate(named_args, cfg):
     """Predicate function for static persistent RMS Norm autotuning"""
-    return X.shape[1] * 2 > TILE_SIZE_N >= X.shape[1]
+    return named_args['X'].shape[1] * 2 > cfg.TILE_SIZE_N >= named_args['X'].shape[1]
 
 
-def _standard_autotune_grid(x):
+def _standard_autotune_grid(named_args, cfg):
     """Grid function for standard RMS Norm autotuning"""
-    return (x.shape[0],)
+    return (named_args['x'].shape[0],)
 
 
 def _standard_autotune_configs():
@@ -192,7 +192,7 @@ def _rms_norm_static_persistent_base(stream, x, y, weight, eps, autotuner: Autot
         stream,
         grid_fn=_static_persistent_autotune_grid,
         kernel=rms_norm_kernel_static_persistent,
-        args_fn=lambda TILE_SIZE_M, TILE_SIZE_N: (x, y, weight, TILE_SIZE_M, TILE_SIZE_N, eps),
+        args_fn=lambda cfg: (x, y, weight, cfg.TILE_SIZE_M, cfg.TILE_SIZE_N, eps),
         max_iter=20,  # reduce the number of configurations to test for faster benchmarking.
     )
     return y
@@ -206,7 +206,7 @@ def _rms_norm_standard_gather_base(stream, x, weight, y, rstd, N, eps, autotuner
         stream,
         grid_fn=_standard_autotune_grid,
         kernel=rms_norm_kernel_gather,
-        args_fn=lambda TILE_SIZE: (x, weight, y, rstd, N, eps, TILE_SIZE),
+        args_fn=lambda cfg: (x, weight, y, rstd, N, eps, cfg.TILE_SIZE),
         max_iter=20,  # reduce the number of configurations to test for faster benchmarking.
     )
     return y
@@ -220,7 +220,7 @@ def _rms_norm_standard_tiled_base(stream, x, weight, y, rstd, N, eps, autotuner:
         stream,
         grid_fn=_standard_autotune_grid,
         kernel=rms_norm_kernel,
-        args_fn=lambda TILE_SIZE: (x, weight, y, rstd, N, eps, TILE_SIZE),
+        args_fn=lambda cfg: (x, weight, y, rstd, N, eps, cfg.TILE_SIZE),
         max_iter=20,  # reduce the number of configurations to test for faster benchmarking.
     )
     return y

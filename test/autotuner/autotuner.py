@@ -11,6 +11,7 @@ import functools
 from typing import Callable, Sequence
 import cuda.tile as ct
 from cuda.tile._execution import TileDispatcher
+from cuda.tile._exception import TileCompilerTimeoutError, TileCompilerExecutionError
 from cuda.tile._cext import default_tile_context
 import random
 import torch
@@ -28,6 +29,11 @@ class Config:
         self.num_ctas = num_ctas
         self.occupancy = occupancy
         self.opt_level = opt_level
+
+    def __getattr__(self, name):
+        if name in self.kwargs:
+            return self.kwargs[name]
+        raise AttributeError(f"Attribute {name} not found in {self.kwargs}")
 
     def __str__(self):
         res = []
@@ -63,13 +69,14 @@ class SearchSpace:
     def __getitem__(self, index):
         return self.configs[index]
 
-    def filter(self, named_args: dict[str, Any]) -> bool:
+    def filter(self, named_args: dict[str, Any], cfg: Config) -> bool:
         if self.predicate_fn is None:
             return True
-        predicate_sig = inspect.signature(self.predicate_fn)
-        predicate_keys = set(predicate_sig.parameters.keys())
-        kwargs = {k: named_args[k] for k in predicate_keys}
-        return self.predicate_fn(**kwargs)
+        result = self.predicate_fn(named_args, cfg)
+        if not isinstance(result, bool):
+            raise TypeError(f"Predicate function {self.predicate_fn.__name__} must return "
+                            f"a boolean value, but returned {type(result).__name__} instead.")
+        return result
 
 
 def _shape_dtype_stride(arg: Any) -> tuple[tuple[int, ...], str, tuple[int, ...] | None]:
@@ -123,20 +130,6 @@ def _time_ms(run_once, *, get_args, stream, warmup=2, rep=10):
     return ms / max(1, rep)
 
 
-def _get_grid(grid_fn, named_args: dict[str, Any]) -> tuple[int, ...]:
-    grid_sig = inspect.signature(grid_fn)
-    grid_keys = set(grid_sig.parameters.keys())
-    kwargs = {}
-    for k in grid_keys:
-        if k not in named_args:
-            raise TypeError(
-                f"Function parameter {k} in grid_fn is not in kernel parameters, "
-                f"available parameters are {list(named_args.keys())}"
-            )
-        kwargs[k] = named_args[k]
-    return grid_fn(**kwargs)
-
-
 @dataclass
 class TunedResult:
     # The tuned parameters
@@ -156,10 +149,13 @@ class TunedResult:
 
 
 def _make_trial_args(
-    args_fn: Callable, kwargs: dict[str, Any], kernel, transforms: dict[str, Callable[[Any], Any]]
+    args_fn: Callable[[Config], tuple[Any, ...]],
+    cfg: Config,
+    kernel: TileDispatcher,
+    transforms: dict[str, Callable[[Any], Any]]
 ) -> tuple[dict[str, Any], tuple[Any, ...]]:
     """Make trial runtime arguments applying the transforms."""
-    args = args_fn(**kwargs)
+    args = args_fn(cfg)
 
     trial_named_args = {}
     trial_args = []
@@ -186,16 +182,6 @@ def _normalize_search_space(space: SearchSpace | Sequence[Config]) -> SearchSpac
     )
 
 
-def _safe_args_fn(args_fn: Callable, kwargs: dict[str, Any]) -> tuple[Any, ...]:
-    try:
-        return args_fn(**kwargs)
-    except TypeError:
-        raise TypeError(
-            f"Invalid parameters for args_fn, "
-            f"should be the same as the search space config argument keys: {list(kwargs.keys())}"
-        )
-
-
 @contextmanager
 def compiler_timeout(timeout_sec: int):
     old_timeout = default_tile_context.config.compiler_timeout_sec
@@ -219,7 +205,7 @@ class Autotuner:
 
     def __call__(self,
                  stream, grid_fn, kernel,
-                 args_fn: Callable,
+                 args_fn: Callable[[Config], tuple[Any, ...]],
                  transforms: dict[str, Callable] = {},
                  *,
                  key_fn=_default_key,
@@ -228,24 +214,52 @@ class Autotuner:
                  seed: int | None = None,
                  force_retune: bool = False) -> TunedResult:
         """
+        Run the autotuned kernel and return its result.
+
         It performs the following steps:
-        1) picks or reuses the cached config and kernel,
-        2) runs the kernel with the best config,
+        1) picks a configuration from the search space or reuses the cached
+           best configuration for the given key (unless ``force_retune=True``),
+        2) launches the kernel with the best configuration,
         3) returns the tuned result.
 
         Args:
-            stream: The stream.
-            grid_fn: The grid function.
-            kernel: The kernel.
-            args_fn: The function from the search space parameters to the runtime arguments.
-            transforms: The transforms functions for runtime arguments if needed.
-            key_fn: The key function.
-            max_iter: The maximum number of valid condigurations to sample from the search space.
-            compiler_time_limit_sec: The compilation time limit for each kernel.
-            seed: The seed for the random number generator. Default is None.
-            force_retune: Force retuning even if the config is found in the cache. Default is False.
+            stream:
+                CUDA stream to use for all kernel launches during tuning and
+                for the final run.
+            grid_fn:
+                Callable that takes the named arguments and a single
+                positional :class:`Config` object and returns a tuple of grid
+                dimensions.
+            kernel:
+                The kernel to autotune.
+            args_fn:
+                Callable that takes a single positional :class:`Config` and
+                returns a tuple of runtime arguments for ``kernel``.
+            transforms:
+                Optional transform or sequence of transforms applied to the
+                runtime arguments before each kernel launch. Use this to
+                perform lightweight pre-/post-processing without changing
+                the search space.
+            key_fn:
+                Optional function that maps the named arguments to a hashable
+                cache key. When omitted, a default key derived from argument
+                shapes/dtypes is used. The key is used to look up and store
+                the best config in the autotuner cache.
+            max_iter:
+                Maximum number of (valid) configurations to sample from the
+                search space.
+            compiler_time_limit_sec:
+                The compilation time limit for each kernel.
+            seed:
+                Optional seed for the random number generator used when
+                sampling configurations. If ``None``, the global random number
+                generator state is used.
+            force_retune:
+                If ``True``, ignore any cached best config for this key and
+                re-run the search. The new best config is then written back
+                to the cache.
         """
-        key = key_fn(kernel, _safe_args_fn(args_fn, self._search_space.configs[0].kwargs))
+        key = key_fn(kernel, args_fn(self._search_space.configs[0]))
         if not force_retune and key in self._cache:
             best_idx, best_grid, best_kernel = self._cache[key]
             logger.debug(f"Using cached config for key {key}: {self._search_space[best_idx]}")
@@ -259,13 +273,13 @@ class Autotuner:
                     break
                 cfg = self._search_space[cfg_idx]
                 trial_named_args, trial_args = _make_trial_args(
-                    args_fn, cfg.kwargs, kernel, transforms
+                    args_fn, cfg, kernel, transforms
                 )
-                if not self._search_space.filter(trial_named_args):
+                if not self._search_space.filter(trial_named_args, cfg):
                     logger.debug(f"Config {cfg} filtered out by predicate function")
                     continue
 
-                grid = _get_grid(grid_fn, trial_named_args)
+                grid = grid_fn(trial_named_args, cfg)
                 updated_kernel = ct.kernel(
                     kernel._pyfunc,
                     num_ctas=cfg.num_ctas,
@@ -280,11 +294,14 @@ class Autotuner:
                     with compiler_timeout(compiler_time_limit_sec):
                         time_ms = _time_ms(
                             run_once,
-                            get_args=lambda: _make_trial_args(args_fn, cfg.kwargs, kernel, transforms)[1], # noqa
+                            get_args=lambda: _make_trial_args(args_fn, cfg, kernel, transforms)[1], # noqa
                             stream=stream,
                         )
-                except Exception as e:
-                    logger.debug(f"{cfg} failed to run: {e}")
+                except TileCompilerTimeoutError as e:
+                    logger.debug(f"{cfg} compilation timeout: {e}")
+                    continue
+                except TileCompilerExecutionError as e:
+                    logger.debug(f"{cfg} compilation error: {e}")
                     continue
 
                 if time_ms < best_time_ms:
@@ -303,7 +320,7 @@ class Autotuner:
         best_cfg = self._search_space[best_idx]
 
         # Use the original runtime arguments to run the kernel with the best config
-        best_packed_args = args_fn(**best_cfg.kwargs)
+        best_packed_args = args_fn(best_cfg)
         ct.launch(stream, best_grid, best_kernel, best_packed_args)
 
         # Return the tuned result
