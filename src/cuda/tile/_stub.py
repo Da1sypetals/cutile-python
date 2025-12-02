@@ -797,7 +797,7 @@ def atomic_max(array, indices, update, /, *,
                check_bounds=True,
                memory_order=MemoryOrder.ACQ_REL,
                memory_scope=MemoryScope.DEVICE) -> TileOrScalar:
-    """Bulk atomic read-modify-write on array elements at given indices.
+    """Bulk atomic maximum value assignment on array elements at given indices.
 
     For each specified index, `atomic_max()` reads the corresponding array element,
     computes the maximum between its value and the corresponding value of `update`,
@@ -812,7 +812,7 @@ def atomic_min(array, indices, update, /, *,
                check_bounds=True,
                memory_order=MemoryOrder.ACQ_REL,
                memory_scope=MemoryScope.DEVICE) -> TileOrScalar:
-    """Bulk atomic read-modify-write on array elements at given indices.
+    """Bulk atomic minimum value assignment on array elements at given indices.
 
     For each specified index, `atomic_min()` reads the corresponding array element,
     computes the minimum between its value and the corresponding value of `update`,
@@ -827,7 +827,7 @@ def atomic_and(array, indices, update, /, *,
                check_bounds=True,
                memory_order=MemoryOrder.ACQ_REL,
                memory_scope=MemoryScope.DEVICE) -> TileOrScalar:
-    """Bulk atomic read-modify-write on array elements at given indices.
+    """Bulk atomic AND operation on array elements at given indices.
 
     For each specified index, `atomic_and()` reads the corresponding array element,
     computes the bitwise AND between its value and the corresponding value of `update`,
@@ -842,7 +842,7 @@ def atomic_or(array, indices, update, /, *,
               check_bounds=True,
               memory_order=MemoryOrder.ACQ_REL,
               memory_scope=MemoryScope.DEVICE) -> Tile:
-    """Bulk atomic read-modify-write on array elements at given indices.
+    """Bulk atomic OR operation on array elements at given indices.
 
     For each specified index, `atomic_or()` reads the corresponding array element,
     computes the bitwise OR between its value and the corresponding value of `update`,
@@ -857,7 +857,7 @@ def atomic_xor(array, indices, update, /, *,
                check_bounds=True,
                memory_order=MemoryOrder.ACQ_REL,
                memory_scope=MemoryScope.DEVICE) -> Tile:
-    """Bulk atomic read-modify-write on array elements at given indices.
+    """Bulk atomic XOR operation on array elements at given indices.
 
     For each specified index, `atomic_xor()` reads the corresponding array element,
     computes the bitwise XOR between its value and the corresponding value of `update`,
@@ -1412,7 +1412,7 @@ def _doc_binary_op(builtin_op):
             >>> y = 2
             >>> tz = {builtin_example.format('tx', 'y')}
 
-            >>> # scalar and scala
+            >>> # scalar and scalar
             >>> z = {builtin_example.format(7, 2)}
         """
         return wrapped

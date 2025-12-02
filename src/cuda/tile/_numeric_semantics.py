@@ -6,26 +6,51 @@ from enum import Enum
 
 
 class RoundingMode(Enum):
-    # Rounds the nearest (ties to even)
+    """
+    Rounding mode for floating-point operations.
+    """
+
     RN = "nearest_even"
-    # Round towards zero (truncate)
+    """Rounds the nearest (ties to even)."""
+
     RZ = "zero"
-    # Round towards negative infinity
+    """Round towards zero (truncate)."""
+
     RM = "negative_inf"
-    # Round towards positive infinity
+    """Round towards negative infinity."""
+
     RP = "positive_inf"
-    # Full precision rounding mode
+    """Round towards positive infinity."""
+
     FULL = "full"
-    # Approximate rounding mode
+    """Full precision rounding mode."""
+
     APPROX = "approx"
-    # Round towards zero to the nearest integer
+    """Approximate rounding mode."""
+
     RZI = "nearest_int_to_zero"
+    """Round towards zero to the nearest integer."""
 
 
 class PaddingMode(Enum):
+    """
+    Padding mode for load operation.
+    """
+
     UNDETERMINED = "undetermined"
+    """The padding value is not determined."""
+
     ZERO = "zero"
+    """The padding value is zero."""
+
     NEG_ZERO = "neg_zero"
+    """The padding value is negative zero."""
+
     NAN = "nan"
+    """The padding value is NaN."""
+
     POS_INF = "pos_inf"
+    """The padding value is positive infinity."""
+
     NEG_INF = "neg_inf"
+    """The padding value is negative infinity."""
