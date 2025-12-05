@@ -1,9 +1,5 @@
 import json
 import cuda.tile as ct
-from ir_dump import CutileIrDump
-from cuda.tile._ir.ir import Function, Block, Operation
-from cuda.tile._ir.ops import IfElse, Loop
-from cuda.tile._ir.ops import Assign
 
 
 @ct.kernel
@@ -53,33 +49,9 @@ def flash_attention_forward_v2(
     ct.store(out, index=(ib, ih, ct.bid(2), 0), tile=oi)
 
 
-def flatten_operations(operations: list[Operation]) -> list[Operation]:
-    flattened = []
-    for i in range(len(operations)):
-        op = operations[i]
-        if isinstance(op, Loop):
-            body = flatten_operations(op.body._operations)
-            flattened.extend(body)
-
-        elif isinstance(op, IfElse):
-            then_block = flatten_operations(op.then_block._operations)
-            else_block = flatten_operations(op.else_block._operations)
-            flattened.extend(then_block)
-            flattened.extend(else_block)
-
-        else:
-            flattened.append(op)
-    return flattened
-
-
-def list_all_operations(func: Function) -> list[Operation]:
-    operations = func.root_block._operations
-    return flatten_operations(operations)
-
-
-def main():
-    # 创建 IR dumper
-    dumper = CutileIrDump(output_dir="./ir_artifacts")
+if __name__ == "__main__":
+    from ir_dump.mock_tensor import MockTensor
+    from ir_dump.shape_check import get_kernel_shapes_info
 
     # 定义参数
     batch_size = 8
@@ -89,43 +61,14 @@ def main():
     Br = 32  # block row size
     Bc = 32  # block col size
 
-    # 创建 mock tensors
-    q = dumper.create_mock_tensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
-    k = dumper.create_mock_tensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
-    v = dumper.create_mock_tensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
-    out = dumper.create_mock_tensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
+    q = MockTensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
+    k = MockTensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
+    v = MockTensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
+    out = MockTensor((batch_size, num_head, seq_len, hidden_size), dtype="float32")
 
-    dumper.dump_typechecked_ir(
-        flash_attention_forward_v2,
-        [q, k, v, out, hidden_size, Br, Bc],
-        output_file="flash_attention_typechecked.cutileir",
-    )
-
-    # Manipulate function
-    func_repr = dumper.get_function_repr(
+    assignment_ops = get_kernel_shapes_info(
         kernel_func=flash_attention_forward_v2,
         args=[q, k, v, out, hidden_size, Br, Bc],
     )
-
-    flattened_ops = list_all_operations(func_repr)
-
-    assignment_ops = []
-
-    for op in flattened_ops:
-        if isinstance(op, Assign):
-            if not str(op.result_var).startswith("$"):
-                # print(f"{op.loc}--{op.loc.end_col} | {op}")
-                op_dict = {
-                    "line": op.loc.line,
-                    "col_start": op.loc.col,
-                    "col_end": op.loc.end_col,
-                    "ty": str(op.result_var.get_type()),
-                }
-                assignment_ops.append(op_dict)
-
     ops_str = json.dumps(assignment_ops)
     print(ops_str)
-
-
-if __name__ == "__main__":
-    main()

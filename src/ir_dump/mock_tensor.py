@@ -8,7 +8,7 @@ MockTensor 类
 class MockTensor:
     """模拟的 Tensor 对象，用于 cuda.tile kernel 的类型推断"""
 
-    def __init__(self, shape, dtype_str="float32"):
+    def __init__(self, shape, dtype="float32"):
         """
         创建 MockTensor
 
@@ -17,7 +17,7 @@ class MockTensor:
             dtype_str: 数据类型，如 "float32", "float16", "int32"
         """
         self.shape = shape
-        self.dtype_str = dtype_str
+        self.dtype_str = dtype
         self.device = "cuda"
 
         # 模拟 torch.dtype
@@ -25,7 +25,7 @@ class MockTensor:
             def __init__(self, name):
                 self.name = name
 
-        self.dtype = MockDtype(dtype_str)
+        self.dtype = MockDtype(dtype)
         self.data_ptr = lambda: 0  # 模拟指针
 
         # 实现 __cuda_array_interface__ 协议
@@ -46,7 +46,7 @@ class MockTensor:
 
         self.__cuda_array_interface__ = {
             "shape": shape,
-            "typestr": dtype_map.get(dtype_str, "<f4"),
+            "typestr": dtype_map.get(dtype, "<f4"),
             "data": (0, False),  # (ptr, read_only)
             "version": 3,
         }
