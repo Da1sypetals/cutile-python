@@ -28,7 +28,7 @@ class CutileIrDump:
 
     def __init__(
         self,
-        output_dir: str = "./ir_dump",
+        output_dir: str = "./ir_artifacts",
         dump_cutileir: bool = True,
         dump_bytecode: bool = True,
         dump_mlir: bool = False,
@@ -296,7 +296,7 @@ class CutileIrDump:
         Returns:
             类型检查后的 IR 字符串
         """
-        func_ir = self.get_function_repr(kernel_func, args, constants)
+        func_ir = self.get_function_repr(kernel_func, args)
 
         # 生成 IR 字符串
         ir_string = func_ir.to_string(include_loc=False)
