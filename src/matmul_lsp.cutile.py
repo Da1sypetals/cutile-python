@@ -36,6 +36,7 @@ def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
         a = ct.reshape(a, (tm, tk))  # Reshape to 2D for ct.mma
 
         # B is (Batch, K, N), load (1, tk, tn) tile
+
         b = ct.load(
             B,
             index=(pid_batch, k, pidy),
