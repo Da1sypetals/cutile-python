@@ -6,10 +6,11 @@ from cuda.tile._ast2ir import get_function_ir
 from cuda.tile._const_utils import get_constant_annotations
 from cuda.tile._passes.typeinfer import infer_types_pass
 from cuda.tile._cext import default_tile_context
+from cuda.tile._execution import kernel as cutile_kernel
 from cuda.tile._ir import ir
 
 
-def get_kernel_shapes_info(kernel_func, args: list) -> list[Operation]:
+def get_kernel_shapes_info(kernel_func: cutile_kernel, args: list) -> list[Operation]:
     func_ir = _get_kernel_shapecheck_ir(kernel_func, args)
     flattened_ops = _list_all_operations(func_ir)
     assignment_ops = []
@@ -29,7 +30,7 @@ def get_kernel_shapes_info(kernel_func, args: list) -> list[Operation]:
     return assignment_ops
 
 
-def _get_kernel_shapecheck_ir(kernel_func, args: list):
+def _get_kernel_shapecheck_ir(kernel_func: cutile_kernel, args: list):
     # 获取原始 Python 函数
     pyfunc = kernel_func._pyfunc
 
@@ -68,10 +69,3 @@ def _flatten_operations(operations: list[Operation]) -> list[Operation]:
         else:
             flattened.append(op)
     return flattened
-
-
-def _filter_out_functions_with_multiple_calls(operation: list[Operation]) -> list[Operation]:
-    """
-    functions here means device functions, not kernel
-    """
-    
