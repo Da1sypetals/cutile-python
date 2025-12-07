@@ -1,9 +1,29 @@
 import json
 import cuda.tile as ct
+from functools import wraps
+from ir_dump.mock_tensor import MockTensor
+from ir_dump.shape_check import typecheck
+import torch
 
 ConstInt = ct.Constant[int]
 
 
+BATCH_DIM = 4
+M_DIM = 512
+K_DIM = 256
+N_DIM = 1024
+
+# A_fp16 = torch.randn((BATCH_DIM, M_DIM, K_DIM), dtype=torch.bfloat16, device="meta")
+# B_fp16 = torch.randn((BATCH_DIM, K_DIM, N_DIM), dtype=torch.bfloat16, device="meta")
+# out = torch.randn((BATCH_DIM, M_DIM, N_DIM), dtype=torch.bfloat16, device="meta")
+
+A_fp16 = MockTensor((BATCH_DIM, M_DIM, K_DIM), dtype="float16")
+B_fp16 = MockTensor((BATCH_DIM, K_DIM, N_DIM), dtype="float16")
+out = MockTensor((BATCH_DIM, M_DIM, N_DIM), dtype="float16")
+tm_val, tn_val, tk_val = 128, 256, 64
+
+
+@typecheck(A_fp16, B_fp16, out, tm_val, tn_val, tk_val)
 @ct.kernel
 def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
     """CuTile kernel for batch matrix multiplication
@@ -55,29 +75,4 @@ def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
 
 
 if __name__ == "__main__":
-    from ir_dump.mock_tensor import MockTensor
-    from ir_dump.shape_check import get_kernel_shapes_info
-
-    BATCH_DIM = 4
-    M_DIM = 512
-    K_DIM = 256
-    N_DIM = 1024
-
-    A_fp16 = MockTensor((BATCH_DIM, M_DIM, K_DIM), dtype="float16")
-    B_fp16 = MockTensor((BATCH_DIM, K_DIM, N_DIM), dtype="float16")
-    out = MockTensor((BATCH_DIM, M_DIM, N_DIM), dtype="float16")
-    tm_val, tn_val, tk_val = 128, 256, 64
-
-    assignment_ops = get_kernel_shapes_info(
-        kernel_func=batch_matmul_kernel,
-        args=[
-            A_fp16,
-            B_fp16,
-            out,
-            tm_val,
-            tn_val,
-            tk_val,
-        ],
-    )
-    ops_str = json.dumps(assignment_ops)
-    print(ops_str)
+    print(batch_matmul_kernel())

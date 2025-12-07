@@ -44,9 +44,15 @@ class MockTensor:
             "uint8": "<u1",
         }
 
+        if dtype not in dtype_map:
+            raise TypeError(
+                f"Unsupported dtype: {dtype}. "
+                "If this dtype is available in torch, consider using torch tensor with device='meta'."
+            )
+
         self.__cuda_array_interface__ = {
             "shape": shape,
-            "typestr": dtype_map.get(dtype, "<f4"),
+            "typestr": dtype_map[dtype],
             "data": (0, False),  # (ptr, read_only)
             "version": 3,
         }

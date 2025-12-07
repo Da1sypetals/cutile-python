@@ -13,6 +13,24 @@ from cuda.tile._cext import default_tile_context
 from cuda.tile._execution import kernel as cutile_kernel
 from cuda.tile._ir import ir
 from enum import StrEnum
+from functools import wraps
+import json
+
+
+def typecheck(*kernel_args):
+    def decorator(kernel):
+        @wraps(kernel)
+        def wrapper(*args, **kwargs):
+            ops = get_kernel_shapes_info(
+                kernel_func=kernel,
+                args=[*kernel_args],
+            )
+            ops_str = json.dumps(ops)
+            return ops_str
+
+        return wrapper
+
+    return decorator
 
 
 def get_kernel_shapes_info(kernel_func: cutile_kernel, args: list) -> list[Operation]:
