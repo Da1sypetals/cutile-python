@@ -121,11 +121,13 @@ function callPythonCutileTypecheckAsync(text: string, scriptPath: string, uri: s
     }
 
     runningTasks.set(uri, true);
+    const totalStartTime = Date.now();
     log(`Starting async Python task for ${uri}`);
 
     const assembleScriptFullPath = ASSEMBLE_SCRIPT_PATH;
 
     // 第一步：异步执行 assemble.py 脚本处理输入
+    const assembleStartTime = Date.now();
     const assembleProcess = exec(
         `PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${assembleScriptFullPath}" -f "${scriptPath}"`,
         {
@@ -134,14 +136,20 @@ function callPythonCutileTypecheckAsync(text: string, scriptPath: string, uri: s
             timeout: 30000 // 30 seconds
         },
         (error, stdout, stderr) => {
+            const assembleEndTime = Date.now();
+            const assembleElapsed = assembleEndTime - assembleStartTime;
+
             if (error) {
-                logError(`Assemble script failed: ${error.message}`);
+                logError(`Assemble script failed (took ${assembleElapsed}ms): ${error.message}`);
                 if (stderr) logError('stderr:', stderr);
                 runningTasks.set(uri, false);
                 return;
             }
 
+            log(`Step 1 - Assemble script completed in ${assembleElapsed}ms`);
+
             // 第二步：异步执行 OUTPUT_PATH 文件获取最终结果
+            const outputStartTime = Date.now();
             exec(
                 `PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${OUTPUT_PATH}"`,
                 {
@@ -150,22 +158,35 @@ function callPythonCutileTypecheckAsync(text: string, scriptPath: string, uri: s
                     timeout: 30000 // 30 seconds
                 },
                 (error2, stdout2, stderr2) => {
+                    const outputEndTime = Date.now();
+                    const outputElapsed = outputEndTime - outputStartTime;
+
                     runningTasks.set(uri, false);
 
                     if (error2) {
-                        logError(`Output script failed: ${error2.message}`);
+                        logError(`Output script failed (took ${outputElapsed}ms): ${error2.message}`);
                         if (stderr2) logError('stderr:', stderr2);
                         return;
                     }
 
+                    log(`Step 2 - Output script completed in ${outputElapsed}ms`);
+
                     try {
                         // 第三步：读取 TYPECHECK_INFO_PATH 文件获取结果
+                        const readStartTime = Date.now();
                         const typecheckResult = fs.readFileSync(TYPECHECK_INFO_PATH, 'utf-8');
                         const jsonResult: Array<Hint> = JSON.parse(typecheckResult);
+                        const readEndTime = Date.now();
+                        const readElapsed = readEndTime - readStartTime;
+
+                        log(`Step 3 - Read and parse typecheck result completed in ${readElapsed}ms`);
 
                         // 更新缓存
                         hintsCache.set(uri, jsonResult);
-                        log(`Cache updated for ${uri} with ${jsonResult.length} hints (due to completion of python typecheck job)`);
+
+                        const totalEndTime = Date.now();
+                        const totalElapsed = totalEndTime - totalStartTime;
+                        log(`Cache updated for ${uri} with ${jsonResult.length} hints (total time: ${totalElapsed}ms)`);
 
                         // 触发 inlay hints 刷新
                         connection.languages.inlayHint.refresh();
@@ -218,13 +239,9 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
         return [];
     }
 
-    const text = document.getText();
     const uri = params.textDocument.uri;
 
-    // 异步启动 Python 任务（不等待结果）
-    callPythonCutileTypecheckAsync(text, filePath, uri);
-
-    // 从缓存获取结果（可能是旧的，或者为空）
+    // 只从缓存获取结果，不触发 Python 任务（Python 任务只在保存和内容变更时触发）
     const pythonResult = hintsCache.get(uri) || [];
 
     // 获取请求的范围
@@ -293,20 +310,31 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
         hints.push(hint);
     }
 
-    log(`Provided ${hints.length} inlay hints for file ${document.uri} (client request, from cache)`);
-
     return hints;
 });
 
+/**
+ * 处理文档变更事件的通用函数
+ * @param document 变更的文档
+ * @param eventName 事件名称（用于日志）
+ */
+function handleDocumentChange(document: TextDocument, eventName: string): void {
+    const uri = document.uri;
+    const filePath = fileURLToPath(uri);
+
+    // 只为 .cutile.py 扩展名的文件触发刷新
+    if (!filePath.endsWith('.cutile.py')) {
+        return;
+    }
+
+    log(`[Event: ${eventName}] Triggering Python task: ${uri}`);
+    const text = document.getText();
+    callPythonCutileTypecheckAsync(text, filePath, uri);
+}
+
 // 监听文档变化，触发 Inlay Hint 刷新
-documents.onDidSave(change => {
-    // When document is saved, notify client to refresh Inlay Hints
-    connection.languages.inlayHint.refresh();
-});
-documents.onDidChangeContent(change => {
-    // When document content changes, notify client to refresh Inlay Hints
-    connection.languages.inlayHint.refresh();
-});
+documents.onDidSave(change => handleDocumentChange(change.document, 'onDidSave'));
+documents.onDidChangeContent(change => handleDocumentChange(change.document, 'onDidChangeContent'));
 
 // 文档管理器监听连接
 documents.listen(connection);

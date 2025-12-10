@@ -284,13 +284,15 @@ if HAS_NUMPY:
 
 # ===== PyTorch ===========
 
-try:
-    import torch as torch
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
-    torch = None
+# try:
+#     import torch as torch
+#     HAS_TORCH = True
+# except ImportError:
+#     HAS_TORCH = False
+#     torch = None
 
+HAS_TORCH = False
+torch = None
 
 if HAS_TORCH:
     # register torch dtypes

@@ -50,6 +50,7 @@ def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
         a = ct.reshape(a, (tm, tk))  # Reshape to 2D for ct.mma
 
         # B is (Batch, K, N), load (1, tk, tn) tile
+
         b = ct.load(
             B,
             index=(pid_batch, k, pidy),
@@ -58,8 +59,6 @@ def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
         )
         b = ct.reshape(b, (tk, tn))  # Reshape to 2D for ct.mma
 
-        z = ct.reshape(b, (2, 4, 128, 2, 2, 2))
-
         accumulator = ct.mma(a, b, acc=accumulator)
 
     # Convert to output dtype and store
@@ -67,3 +66,69 @@ def batch_matmul_kernel(A, B, C, tm: ConstInt, tn: ConstInt, tk: ConstInt):
     # Store with 3D index and 3D shape, C is (Batch, M, N)
     result_3d = ct.reshape(result, (1, tm, tn))
     ct.store(C, index=(pid_batch, pidx, pidy), tile=result_3d)
+
+
+if __name__ == "__main__":
+    from ir_dump.mock_tensor import MockTensor
+    from ir_dump.dumper import CutileIrDump
+    from ir_dump.shape_check import get_kernel_shapes_info
+    from cuda.tile._exception import Loc, TileError
+    import json
+
+    dumper = CutileIrDump(
+        output_dir="./ir_artifacts",
+        dump_cutileir=True,
+        dump_bytecode=True,
+        dump_mlir=False,
+    )
+
+    # 定义参数
+    bsz = 100
+    M = 1024
+    N = 2048
+    K = 512
+    TILE_M = 32
+    TILE_N = 64
+    TILE_K = 128
+
+    # Forward pass tensors
+    a = MockTensor((bsz, M, K), dtype="float16")
+    b = MockTensor((bsz, K, N), dtype="float16")
+    c = MockTensor((bsz, M, N), dtype="float16")
+
+    # dumper.dump_typechecked_ir(
+    #     kernel_func=my_kernel,
+    #     args=[a, b, c, mod, TILE_M, TILE_N, TILE_K],
+    #     output_file="my_func.tcir",
+    # )
+
+    # Get shape info for backward kernel part 2
+    def tile_err_todict(e: TileError):
+        loc = e.loc
+        line: int = loc.line
+        col: int = loc.col
+        filename = loc.filename
+        last_line = loc.last_line
+        end_col = loc.end_col
+        message = e.message
+
+        return {
+            "line": line,
+            "col": col,
+            "filename": filename,
+            "last_line": last_line,
+            "end_col": end_col,
+            "message": message,
+        }
+
+    try:
+        ops = get_kernel_shapes_info(
+            kernel_func=batch_matmul_kernel,
+            args=[a, b, c, TILE_M, TILE_N, TILE_K],
+        )
+        ops_str = json.dumps(ops)
+        print(ops_str)
+    except TileError as e:
+        error = tile_err_todict(e)
+        err_str = json.dumps(error, indent=4)
+        print(err_str)
