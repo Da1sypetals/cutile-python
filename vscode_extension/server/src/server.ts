@@ -12,7 +12,7 @@ import {
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -23,6 +23,12 @@ const connection = createConnection(ProposedFeatures.all);
 
 // 创建文档管理器
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
+
+// 缓存：存储每个文件的 inlay hints
+const hintsCache: Map<string, Array<Hint>> = new Map();
+
+// 记录正在运行的 Python 任务，避免重复启动
+const runningTasks: Map<string, boolean> = new Map();
 
 // 日志工具函数 - 带时间戳
 function getTimestamp(): string {
@@ -68,56 +74,113 @@ interface Hint {
 }
 
 /**
- * Call Python script to perform cuTile type checking
- * If Python execution fails, throw error and crash
- * 
- * Execution flow:
- * 1. First execute ASSEMBLE_SCRIPT_PATH (typecheck/assemble.py) to process input
- * 2. Then execute OUTPUT_PATH (~/.cutile-typeviz/main.py) to get results
+ * Call Python script to perform cuTile type checking (synchronous version)
+ * If Python execution fails, throw error
  * 
  * @param text The text content to analyze
  * @param scriptPath The Python script path to run (the file being monitored)
  * @returns JSON result output from Python script
  */
-function callPythonCutileTypecheck(text: string, scriptPath: string): Array<Hint> {
-    try {
-        // 第一步：执行 assemble.py 脚本处理输入
-        // 通过 stdin 传入文本内容
-        const assembleScriptFullPath = ASSEMBLE_SCRIPT_PATH;
-        execSync(`PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${assembleScriptFullPath}" -f "${scriptPath}"`, {
-            input: text,
+function callPythonCutileTypecheckSync(text: string, scriptPath: string): Array<Hint> {
+    // 第一步：执行 assemble.py 脚本处理输入
+    const assembleScriptFullPath = ASSEMBLE_SCRIPT_PATH;
+    execSync(`PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${assembleScriptFullPath}" -f "${scriptPath}"`, {
+        input: text,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        timeout: 30000 // 30 seconds
+    });
+
+    // 第二步：执行 OUTPUT_PATH 文件获取最终结果
+    execSync(`PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${OUTPUT_PATH}"`, {
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        timeout: 30000 // 30 seconds
+    });
+
+    // 第三步：读取 TYPECHECK_INFO_PATH 文件获取结果
+    const typecheckResult = fs.readFileSync(TYPECHECK_INFO_PATH, 'utf-8');
+    const jsonResult: Array<Hint> = JSON.parse(typecheckResult);
+
+    return jsonResult;
+}
+
+/**
+ * Call Python script to perform cuTile type checking (asynchronous version)
+ * Updates cache and triggers refresh when done
+ * 
+ * @param text The text content to analyze
+ * @param scriptPath The Python script path to run (the file being monitored)
+ * @param uri The document URI for cache key
+ */
+function callPythonCutileTypecheckAsync(text: string, scriptPath: string, uri: string): void {
+    // 如果该文件已有正在运行的任务，不重复启动
+    if (runningTasks.get(uri)) {
+        log(`Python task already running for ${uri}, skipping`);
+        return;
+    }
+
+    runningTasks.set(uri, true);
+    log(`Starting async Python task for ${uri}`);
+
+    const assembleScriptFullPath = ASSEMBLE_SCRIPT_PATH;
+
+    // 第一步：异步执行 assemble.py 脚本处理输入
+    const assembleProcess = exec(
+        `PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${assembleScriptFullPath}" -f "${scriptPath}"`,
+        {
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024, // 10MB buffer
             timeout: 30000 // 30 seconds
-        });
+        },
+        (error, stdout, stderr) => {
+            if (error) {
+                logError(`Assemble script failed: ${error.message}`);
+                if (stderr) logError('stderr:', stderr);
+                runningTasks.set(uri, false);
+                return;
+            }
 
-        // 第二步：执行 OUTPUT_PATH 文件获取最终结果
-        execSync(`PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${OUTPUT_PATH}"`, {
-            encoding: 'utf-8',
-            maxBuffer: 10 * 1024 * 1024, // 10MB buffer
-            timeout: 30000 // 30 seconds
-        });
+            // 第二步：异步执行 OUTPUT_PATH 文件获取最终结果
+            exec(
+                `PYTHONPATH=${CUTILE_SRC_PATH} ${PYTHON_EXECUTABLE} "${OUTPUT_PATH}"`,
+                {
+                    encoding: 'utf-8',
+                    maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+                    timeout: 30000 // 30 seconds
+                },
+                (error2, stdout2, stderr2) => {
+                    runningTasks.set(uri, false);
 
-        // 第三步：读取 TYPECHECK_INFO_PATH 文件获取结果
-        const typecheckResult = fs.readFileSync(TYPECHECK_INFO_PATH, 'utf-8');
-        const jsonResult: Array<Hint> = JSON.parse(typecheckResult);
+                    if (error2) {
+                        logError(`Output script failed: ${error2.message}`);
+                        if (stderr2) logError('stderr:', stderr2);
+                        return;
+                    }
 
-        return jsonResult;
-    } catch (error: any) {
-        // Python 执行失败，直接崩溃
-        const errorMessage = `Python script execution failed: ${error.message}`;
-        logError(errorMessage);
+                    try {
+                        // 第三步：读取 TYPECHECK_INFO_PATH 文件获取结果
+                        const typecheckResult = fs.readFileSync(TYPECHECK_INFO_PATH, 'utf-8');
+                        const jsonResult: Array<Hint> = JSON.parse(typecheckResult);
 
-        // 输出详细错误信息
-        if (error.stderr) {
-            logError('Python stderr:', error.stderr.toString());
+                        // 更新缓存
+                        hintsCache.set(uri, jsonResult);
+                        log(`Cache updated for ${uri} with ${jsonResult.length} hints (due to completion of python typecheck job)`);
+
+                        // 触发 inlay hints 刷新
+                        connection.languages.inlayHint.refresh();
+                    } catch (parseError: any) {
+                        logError(`Failed to parse typecheck result: ${parseError.message}`);
+                    }
+                }
+            );
         }
-        if (error.stdout) {
-            logError('Python stdout:', error.stdout.toString());
-        }
+    );
 
-        // 直接抛出错误，不进行 fallback
-        throw new Error(errorMessage);
+    // 通过 stdin 传入文本内容
+    if (assembleProcess.stdin) {
+        assembleProcess.stdin.write(text);
+        assembleProcess.stdin.end();
     }
 }
 
@@ -156,13 +219,13 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
     }
 
     const text = document.getText();
+    const uri = params.textDocument.uri;
 
+    // 异步启动 Python 任务（不等待结果）
+    callPythonCutileTypecheckAsync(text, filePath, uri);
 
-    // 调用正在监控的文件作为 Python 脚本运行
-    // 如果失败会直接抛出错误崩溃
-    const pythonResult = callPythonCutileTypecheck(text, filePath);
-
-
+    // 从缓存获取结果（可能是旧的，或者为空）
+    const pythonResult = hintsCache.get(uri) || [];
 
     // 获取请求的范围
     const startLine = params.range.start.line;
@@ -230,7 +293,7 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
         hints.push(hint);
     }
 
-    log(`Provided ${hints.length} inlay hints for file ${document.uri}`)
+    log(`Provided ${hints.length} inlay hints for file ${document.uri} (client request, from cache)`);
 
     return hints;
 });
