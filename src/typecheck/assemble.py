@@ -5,18 +5,23 @@ from pathlib import Path
 from dataclasses import dataclass
 import textwrap
 
+CACHE_DIR_NAME = ".cutile-typeviz"
+TYPECHECK_INFO_FILENAME = "typecheck.json"
+TYPECHECK_INFO_PATH = Path.home() / CACHE_DIR_NAME / TYPECHECK_INFO_FILENAME
 
 head = """
 import json
 from ir_dump.mock_tensor import MockTensor
 from ir_dump.shape_check import get_kernel_shapes_info
+from pathlib import Path
 
 ops = []
 """
 
-tail = """
+tail = f"""
 ops_str = json.dumps(ops)
-print(ops_str)
+typecheck_info_path = Path("{TYPECHECK_INFO_PATH}").resolve()
+typecheck_info_path.write_text(ops_str)
 """
 
 entrance = """
@@ -166,7 +171,7 @@ if __name__ == "__main__":
 
     code = generate_typecheck_code(args.file)
 
-    cache_dir = Path.home() / ".cutile-typeviz"
+    cache_dir = Path.home() / CACHE_DIR_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     output_file = cache_dir / "main.py"
